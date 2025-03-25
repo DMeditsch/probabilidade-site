@@ -89,7 +89,6 @@ def excluir_database():
 def consultar_ia(pergunta, schema_info):
     try:
         # Inicializar o cliente Gemini com a chave da API fixa
-        API_KEY = "AIzaSyA9S_dQ6XGTnxNY9329Usf8sVUWGd5NBOY"
         client = genai.Client(api_key=API_KEY)
         
         # Preparar o prompt com informações sobre o esquema do banco
