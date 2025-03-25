@@ -2,6 +2,5 @@ matplotlib==3.10.1
 numpy==2.2.4
 pandas==2.2.3
 plotly==6.0.1
-protobuf==6.30.1
 streamlit==1.43.2
 google-genai==1.7.0
