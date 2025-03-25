@@ -107,6 +107,7 @@ def consultar_ia(pergunta, schema_info):
         3. Coloque aspas duplas em nomes de colunas com espaços
         4. Retorne apenas o código SQL sem explicações
         5. As categorias devem ser exibidas pelo nome completo entre aspas duplas exemplo: "Object Name"
+        6. A resposta não deve ser em markdown, APENAS o código SQL
         
         Se o usuário estiver fazendo uma pergunta geral sobre o banco de dados:
         1. Forneça uma resposta clara e direta
