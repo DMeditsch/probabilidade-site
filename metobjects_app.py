@@ -88,7 +88,8 @@ def excluir_database():
 # Função para consultar a API do Gemini para gerar consultas SQL ou analisar dados
 def consultar_ia(pergunta, schema_info):
     try:
-        # Inicializar o cliente Gemini com a chave da API fixa
+        # Inicializar o cliente Gemini com a chave da API dos secrets do Streamlit
+        API_KEY = st.secrets["API_KEY"]
         client = genai.Client(api_key=API_KEY)
         
         # Preparar o prompt com informações sobre o esquema do banco
