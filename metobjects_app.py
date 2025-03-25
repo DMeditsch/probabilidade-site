@@ -9,6 +9,9 @@ import os
 import gzip
 import shutil
 import atexit
+import json
+from google import genai
+from google.genai import types
 
 # Configurar o layout da página para wide mode
 st.set_page_config(
@@ -25,10 +28,10 @@ st.markdown("### Análise interativa da coleção do Metropolitan Museum of Art"
 # Adicionar explicação sobre o processo de banco de dados
 with st.expander("ℹ️ Informações sobre o banco de dados", expanded=False):
     st.markdown("""
-    Este aplicativo utiliza um banco de dados SQLite que é extraído automaticamente
-    de um arquivo compactado (database.gz) quando o aplicativo é iniciado.
+    Este aplicativo utiliza um banco de dados SQLite para armazenar e consultar 
+    a coleção do Metropolitan Museum of Art.
     
-    O banco de dados descompactado será automaticamente excluído quando você 
+    O banco de dados será automaticamente excluído quando você 
     fechar o aplicativo para economizar espaço em disco.
     
     Se você encontrar problemas com o banco de dados, tente reiniciar o aplicativo.
@@ -45,26 +48,24 @@ def descompactar_database():
         if os.path.exists(GZIP_PATH):
             # Verificar se o banco já está descompactado
             if not os.path.exists(DB_PATH):
-                st.info("Descompactando o banco de dados... Por favor, aguarde...")
-                status = st.status("Descompactando...", expanded=True)
+                st.info("Preparando o banco de dados... Por favor, aguarde...")
+                status = st.status("Preparando...", expanded=True)
                 with gzip.open(GZIP_PATH, 'rb') as f_in:
                     with open(DB_PATH, 'wb') as f_out:
                         shutil.copyfileobj(f_in, f_out)
                 status.update(label="Banco de dados pronto!", state="complete", expanded=False)
             return True
         else:
-            st.error(f"Arquivo compactado não encontrado: {GZIP_PATH}")
+            st.error(f"Arquivo de banco de dados não encontrado")
             st.error("O aplicativo não pode funcionar sem o arquivo de banco de dados.")
             st.markdown("""
             ### Solução:
-            1. Certifique-se de que o arquivo `database.gz` está presente no mesmo diretório do aplicativo.
-            2. Se o arquivo foi renomeado, renomeie-o de volta para `database.gz`.
-            3. Se o arquivo está em outro diretório, mova-o para o diretório do aplicativo.
-            4. Reinicie o aplicativo após resolver o problema.
+            1. Verifique se o arquivo necessário está presente no diretório do aplicativo.
+            2. Reinicie o aplicativo após resolver o problema.
             """)
             return False
     except Exception as e:
-        st.error(f"Erro ao descompactar o banco de dados: {e}")
+        st.error(f"Erro ao preparar o banco de dados: {e}")
         return False
 
 # Função para excluir o banco de dados quando o aplicativo for encerrado
@@ -84,6 +85,64 @@ def excluir_database():
         except Exception as e:
             print(f"Erro ao excluir o banco de dados: {e}")
 
+# Função para consultar a API do Gemini para gerar consultas SQL ou analisar dados
+def consultar_ia(pergunta, schema_info):
+    try:
+        # Inicializar o cliente Gemini com a chave da API fixa
+        API_KEY = "AIzaSyA9S_dQ6XGTnxNY9329Usf8sVUWGd5NBOY"
+        client = genai.Client(api_key=API_KEY)
+        
+        # Preparar o prompt com informações sobre o esquema do banco
+        prompt = f"""
+        Você é um assistente especializado em SQL para o banco de dados do Metropolitan Museum of Art.
+        
+        Informações sobre o esquema do banco de dados:
+        {schema_info}
+        
+        A consulta do usuário é: "{pergunta}"
+        
+        Se o usuário estiver pedindo uma consulta SQL:
+        1. Gere APENAS o código SQL que atenda à solicitação
+        2. Use a sintaxe SQLite
+        3. Coloque aspas duplas em nomes de colunas com espaços
+        4. Retorne apenas o código SQL sem explicações
+        5. As categorias devem ser exibidas pelo nome completo entre aspas duplas exemplo: "Object Name"
+        
+        Se o usuário estiver fazendo uma pergunta geral sobre o banco de dados:
+        1. Forneça uma resposta clara e direta
+        2. Mencione também uma consulta SQL que pode ser usada para obter esses dados
+        
+        Resposta:
+        """
+        
+        # Configurar o modelo e a solicitação
+        model = "gemini-2.0-flash-lite"
+        contents = [
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=prompt)],
+            ),
+        ]
+        
+        generate_content_config = types.GenerateContentConfig(
+            temperature=0.2,
+            top_p=0.95,
+            top_k=40,
+            max_output_tokens=2048,
+            response_mime_type="text/plain",
+        )
+        
+        # Fazer a chamada da API
+        response = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=generate_content_config,
+        )
+        
+        return response.text
+    except Exception as e:
+        return f"Erro ao consultar a IA: {e}"
+
 # Registrar a função para ser executada ao encerrar o aplicativo
 atexit.register(excluir_database)
 
@@ -94,7 +153,7 @@ if not descompactar_database():
 # Verificar se o banco de dados existe após descompactar
 if not os.path.exists(DB_PATH):
     st.error(f"Banco de dados não encontrado: {DB_PATH}")
-    st.info("Certifique-se que o arquivo database.gz está presente no diretório.")
+    st.info("Verifique se os arquivos necessários estão presentes no diretório.")
     st.stop()
 
 # Função para executar consultas SQL
@@ -128,6 +187,49 @@ def obter_valores_unicos(coluna):
     valores = [val[0] for val in cursor.fetchall()]
     conn.close()
     return valores
+
+# Função para obter o esquema do banco de dados
+@st.cache_data(ttl=7200)
+def obter_schema_info():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Obter informações sobre a tabela
+    cursor.execute("PRAGMA table_info(metobjects)")
+    colunas = cursor.fetchall()
+    
+    # Obter alguns exemplos de dados para cada coluna
+    schema_info = "Tabela: metobjects\n\nColunas:\n"
+    
+    for col in colunas:
+        col_id, nome, tipo, notnull, default_val, pk = col
+        schema_info += f"- {nome} ({tipo})\n"
+        
+        # Obter alguns valores distintos para esta coluna (se não for muito grande)
+        try:
+            cursor.execute(f'SELECT DISTINCT "{nome}" FROM metobjects WHERE "{nome}" IS NOT NULL AND "{nome}" != "" LIMIT 5')
+            exemplos = cursor.fetchall()
+            if exemplos:
+                schema_info += f"  Exemplos: {', '.join([str(ex[0]) for ex in exemplos])}\n"
+        except:
+            pass
+    
+    # Obter contagens para algumas colunas importantes
+    cursor.execute("SELECT COUNT(*) FROM metobjects")
+    total_rows = cursor.fetchone()[0]
+    schema_info += f"\nTotal de registros: {total_rows}\n"
+    
+    # Obter estatísticas para algumas colunas categóricas importantes
+    for coluna in ["Department", "Culture", "Object Name", "Classification"]:
+        try:
+            cursor.execute(f'SELECT COUNT(DISTINCT "{coluna}") FROM metobjects WHERE "{coluna}" != ""')
+            distinct_count = cursor.fetchone()[0]
+            schema_info += f"Total de {coluna} distintos: {distinct_count}\n"
+        except:
+            pass
+    
+    conn.close()
+    return schema_info
 
 # Função para obter estatísticas básicas
 @st.cache_data(ttl=3600)
@@ -532,6 +634,155 @@ def executar_sql_personalizado():
         else:
             st.error("Por favor, digite uma consulta SQL")
 
+# Função para a interface de consulta com IA
+def consulta_com_ia():
+    st.subheader("🤖 Consulta com Inteligência Artificial")
+    
+    # Exemplos de consultas
+    st.markdown("""
+    ### 💡 Exemplos do que você pode perguntar:
+    
+    - Mostre todas as pinturas de Claude Monet
+    - Quais são os 10 artistas com mais obras no museu?
+    - Quantas esculturas egípcias existem na coleção?
+    - Conte o número de objetos por século
+    - Quais são os objetos mais antigos da coleção?
+    """)
+    
+    # Entrada da pergunta
+    pergunta = st.text_area(
+        "Digite sua pergunta em linguagem natural:",
+        height=100,
+        placeholder="Ex: Mostre todas as pinturas de Vincent van Gogh ordenadas por data"
+    )
+    
+    # Inicializar variáveis na sessão se não existirem
+    if "consulta_sql_gerada" not in st.session_state:
+        st.session_state.consulta_sql_gerada = ""
+    if "mostrar_resultados" not in st.session_state:
+        st.session_state.mostrar_resultados = False
+    
+    # Dividir a tela em duas colunas apenas para a entrada e informações
+    col1, col2 = st.columns([1, 2])
+    
+    # Primeira coluna para consulta e botões
+    with col1:
+        # Botão para consultar a IA
+        if st.button("Consultar IA", type="primary"):
+            if pergunta:
+                with st.spinner("A IA está processando sua consulta..."):
+                    # Obter informações do esquema
+                    schema_info = obter_schema_info()
+                    
+                    # Consultar a IA
+                    resposta = consultar_ia(pergunta, schema_info)
+                    
+                    # Verificar se a resposta parece ser SQL
+                    is_sql_query = "SELECT" in resposta.upper() and "FROM" in resposta.upper()
+                    
+                    if is_sql_query:
+                        # Extrair apenas a consulta SQL se houver texto adicional
+                        # Encontrar a consulta SQL entre os sinais SELECT e ;
+                        import re
+                        sql_match = re.search(r'(SELECT.+?);', resposta, re.DOTALL | re.IGNORECASE)
+                        
+                        if sql_match:
+                            consulta_sql = sql_match.group(1) + ";"
+                        else:
+                            consulta_sql = resposta.strip()
+                        
+                        # Armazenar a consulta gerada na sessão
+                        st.session_state.consulta_sql_gerada = consulta_sql
+                        st.session_state.resposta_texto = ""
+                    else:
+                        # Armazenar resposta textual
+                        st.session_state.resposta_texto = resposta
+                        st.session_state.consulta_sql_gerada = ""
+                    
+                    # Resetar flag de resultados
+                    st.session_state.mostrar_resultados = False
+            else:
+                st.error("Por favor, digite uma pergunta.")
+    
+        # Se temos uma consulta SQL gerada, mostrar e permitir executá-la
+        if st.session_state.consulta_sql_gerada:
+            st.subheader("Consulta SQL gerada:")
+            st.code(st.session_state.consulta_sql_gerada, language="sql")
+            
+            # Botão para executar a consulta
+            if st.button("Executar Consulta SQL"):
+                st.session_state.mostrar_resultados = True
+                st.rerun()
+        
+        # Se temos uma resposta textual, mostrar
+        if "resposta_texto" in st.session_state and st.session_state.resposta_texto:
+            st.subheader("Resposta:")
+            st.write(st.session_state.resposta_texto)
+    
+    # Segunda coluna para informações sobre o banco de dados
+    with col2:
+        # Mostrar dicas sobre a estrutura do banco
+        st.subheader("Estrutura do Banco de Dados")
+        st.markdown("""
+        O banco de dados contém a tabela `metobjects` com informações sobre a coleção 
+        do Metropolitan Museum of Art.
+        
+        **Colunas principais:**
+        - `Object ID`: Identificador único do objeto
+        - `Title`: Título da obra
+        - `Artist Display Name`: Nome do artista
+        - `Object Date`: Data da obra
+        - `Department`: Departamento do museu
+        - `Culture`: Cultura associada à obra
+        - `Medium`: Material/meio utilizado
+        - `Classification`: Classificação da obra
+        - `Object Name`: Tipo do objeto (pintura, escultura, etc.)
+        - `Is Public Domain`: Se a obra está em domínio público
+        """)
+        
+        # Mostrar alguns exemplos de valores
+        with st.expander("Ver exemplos de valores", expanded=False):
+            # Departamentos
+            st.subheader("Departamentos")
+            df_dept = executar_consulta("SELECT DISTINCT Department FROM metobjects WHERE Department != '' LIMIT 20")
+            st.dataframe(df_dept)
+            
+            # Culturas
+            st.subheader("Culturas")
+            df_cult = executar_consulta("SELECT DISTINCT Culture FROM metobjects WHERE Culture != '' LIMIT 20")
+            st.dataframe(df_cult)
+            
+            # Objetos
+            st.subheader("Tipos de Objetos")
+            df_obj = executar_consulta("SELECT DISTINCT \"Object Name\" FROM metobjects WHERE \"Object Name\" != '' LIMIT 20")
+            st.dataframe(df_obj)
+    
+    # Mostrar resultados em tela cheia (fora das colunas)
+    if st.session_state.mostrar_resultados and st.session_state.consulta_sql_gerada:
+        st.markdown("---")  # Separador horizontal
+        
+        try:
+            # Executar a consulta
+            df = executar_consulta(st.session_state.consulta_sql_gerada)
+            
+            # Exibir os resultados
+            if len(df) > 0:
+                st.subheader("Resultados:")
+                st.dataframe(df, use_container_width=True)  # Usar toda a largura disponível
+                
+                # Opção para baixar como CSV
+                csv = df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Baixar como CSV",
+                    data=csv,
+                    file_name="resultado_ia.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("A consulta não retornou resultados")
+        except Exception as e:
+            st.error(f"Erro ao executar a consulta: {e}")
+
 # Interface principal
 def main():
     # Barra lateral
@@ -543,7 +794,7 @@ def main():
         "Escolha uma seção:",
         ["Visão Geral", "Filtrar Objetos", "Análise por Departamento", 
          "Análise por Tipo de Objeto", "Análise por Cultura", 
-         "Busca por ID", "Visualização Personalizada", "Consulta SQL"]
+         "Busca por ID", "Visualização Personalizada", "Consulta SQL", "Consulta com IA"]
     )
     
     # Obter estatísticas gerais
@@ -558,7 +809,6 @@ def main():
     💾 **Banco de Dados:**
     - Arquivo: {DB_PATH}
     - Tamanho: {tamanho_db:.2f} MB
-    - Origem: Extraído de {GZIP_PATH}
     - Status: Temporário (será excluído ao fechar)
     """)
     
@@ -831,6 +1081,9 @@ def main():
     
     elif pagina == "Consulta SQL":
         executar_sql_personalizado()
+        
+    elif pagina == "Consulta com IA":
+        consulta_com_ia()
 
 # Executar o aplicativo
 if __name__ == "__main__":
