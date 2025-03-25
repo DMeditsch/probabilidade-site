@@ -1,0 +1,10 @@
+streamlit
+pandas
+sqlite3
+matplotlib
+plotly
+numpy
+os
+gzip
+shutil
+atexit
